@@ -1,9 +1,9 @@
-use bevy_sonus::{SonusAudioPlugin, SonusListener};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_skein::SkeinPlugin;
+use bevy_sonus::{SonusAudioPlugin, SonusListener};
 
 /// Component tag for the on-screen FPS display UI text.
 #[derive(Component, Default, Clone)]
@@ -42,7 +42,7 @@ fn setup_game(
         cursor.visible = false;
     }
 
-    commands.spawn_scene(bsn!{
+    commands.spawn_scene(bsn! {
         DirectionalLight
         Transform::from_xyz(4.0, 10.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y)
     });

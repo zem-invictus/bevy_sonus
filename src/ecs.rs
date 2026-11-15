@@ -142,6 +142,16 @@ pub struct SonusEmitter {
     pub(crate) control: Arc<SonusControl>,
 }
 
+impl SonusEmitter {
+    pub fn source(&self) -> &Handle<AudioSource> {
+        &self.source
+    }
+
+    pub fn control(&self) -> &Arc<SonusControl> {
+        &self.control
+    }
+}
+
 #[derive(Default)]
 pub struct SonusEmitterFromConfigTemplate {
     pub source: HandleTemplate<AudioSource>,
