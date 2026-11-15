@@ -278,33 +278,32 @@ impl Default for SonusEmitterConfig {
 pub(crate) fn sonus_audio_system(
     mut commands: Commands,
     q_emitter: Query<&SonusEmitter>,
-    q_listener: Query<
-        (),
+    q_listener: Query<(), (With<SonusListener>, Without<SonusListenerShouldNotPlay>)>,
+    q_controls: Query<
         (
-            With<SonusListener>,
-            Without<SonusListenerShouldNotPlay>,
-            Without<AudioPlayer<SonusSource>>,
+            Entity,
+            &SonusControlRef,
+            &SonusEmitterControlOf,
+            &SonusListenerControlOf,
         ),
+        Without<AudioPlayer<SonusSource>>,
     >,
-    q_controls: Query<(
-        &SonusControlRef,
-        &SonusEmitterControlOf,
-        &SonusListenerControlOf,
-    )>,
     audio_assets: Res<Assets<AudioSource>>,
     mut sonus_assets: ResMut<Assets<SonusSource>>,
 ) {
-    for (control, audio_source, listener) in
-        q_controls.iter().flat_map(|(control, emitter, listener)| {
-            let audio_source = audio_assets.get(q_emitter.get(emitter.0).ok()?.0.id())?;
-            q_listener.get(listener.0).ok()?;
-            Some((control.0.clone(), audio_source, listener.0))
-        })
+    for (entity, control, audio_source) in
+        q_controls
+            .iter()
+            .flat_map(|(entity, control, emitter, listener)| {
+                let audio_source = audio_assets.get(q_emitter.get(emitter.0).ok()?.0.id())?;
+                q_listener.get(listener.0).ok()?;
+                Some((entity, control.0.clone(), audio_source))
+            })
     {
         let sonus_source = SonusSource::new(audio_source.bytes.clone(), control);
         let sonus_handle = sonus_assets.add(sonus_source);
 
-        commands.entity(listener).insert(AudioPlayer(sonus_handle));
+        commands.entity(entity).insert(AudioPlayer(sonus_handle));
     }
 }
 
@@ -628,6 +627,7 @@ pub fn sonus_emitter_config_system(
 
         for listener in listener_query.iter() {
             commands.spawn_scene(bsn! {
+                ChildOf(emitter)
                 SonusEmitterControlOf(emitter)
                 SonusListenerControlOf(listener)
                 ~SonusControlFromConfigTemplate {
@@ -651,6 +651,7 @@ pub fn sonus_emitter_controls_system(
     for emitter in query.iter() {
         for listener in listener_query.iter() {
             commands.spawn_scene(bsn! {
+                ChildOf(emitter)
                 SonusEmitterControlOf(emitter)
                 SonusListenerControlOf(listener)
                 SonusControlRef
@@ -856,7 +857,11 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(entity).contains::<SonusEmitter>());
-        assert!(app.world().entity(entity).contains::<SonusEmitterControls>());
+        assert!(
+            app.world()
+                .entity(entity)
+                .contains::<SonusEmitterControls>()
+        );
     }
 
     #[test]
@@ -883,8 +888,16 @@ mod tests {
 
         app.update();
 
-        assert!(app.world().entity(listener).contains::<SonusListenerControls>());
-        assert!(app.world().entity(emitter).contains::<SonusEmitterControls>());
+        assert!(
+            app.world()
+                .entity(listener)
+                .contains::<SonusListenerControls>()
+        );
+        assert!(
+            app.world()
+                .entity(emitter)
+                .contains::<SonusEmitterControls>()
+        );
 
         let mut query = app.world_mut().query::<&SonusControlRef>();
 
