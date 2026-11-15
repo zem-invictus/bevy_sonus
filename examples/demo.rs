@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_skein::SkeinPlugin;
 use bevy_sonus::{SonusAudioPlugin, SonusListener};
+use bevy_sonus::ecs::SonusListenerShouldNotPlay;
 
 /// Component tag for the on-screen FPS display UI text.
 #[derive(Component, Default, Clone)]

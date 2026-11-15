@@ -1,6 +1,5 @@
 ﻿use bevy::prelude::*;
-use bevy_sonus::{AcousticMaterialPreset, SonusAudioPlugin, SonusListener};
-use bevy_sonus::ecs::SonusEmitterFromConfigTemplate;
+use bevy_sonus::{AcousticMaterialPreset, SonusAudioPlugin, SonusEmitterConfig, SonusListener};
 
 fn main() {
     App::new()
@@ -23,8 +22,8 @@ fn setup(
 
     // Spatial sound emitter with occlusion and distance attenuation
     commands.spawn_scene(bsn! {
-        ~SonusEmitterFromConfigTemplate {
-            source: "air_raid.wav",
+        SonusEmitterConfig {
+            source_path: "air_raid.wav",
             occlusion: true,
             min_dist: 2.0,
             max_dist: 20.0,

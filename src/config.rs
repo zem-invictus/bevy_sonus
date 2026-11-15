@@ -5,8 +5,9 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// Distance-based attenuation models for spatial audio emitters.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub enum AttenuationModel {
+    #[default]
     None,
     Linear {
         min_dist: f32,
