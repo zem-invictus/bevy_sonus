@@ -1,12 +1,13 @@
-use bevy_sonus::{SonusAudioPlugin, SonusListener};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_skein::SkeinPlugin;
+use bevy_sonus::{SonusAudioPlugin, SonusListener};
+use bevy_sonus::ecs::SonusListenerShouldNotPlay;
 
 /// Component tag for the on-screen FPS display UI text.
-#[derive(Component)]
+#[derive(Component, Default, Clone)]
 struct FpsText;
 
 fn main() {
@@ -33,55 +34,47 @@ fn main() {
 
 fn setup_game(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
-    commands.spawn(WorldAssetRoot(
-        asset_server.load(GltfAssetLabel::Scene(0).from_asset("scenes/test.glb")),
-    ));
+    commands.spawn_scene(bsn! {WorldAssetRoot("scenes/test.glb#Scene0")});
 
     if let Ok(mut cursor) = cursor_options.single_mut() {
         cursor.grab_mode = CursorGrabMode::Locked;
         cursor.visible = false;
     }
 
-    commands.spawn((
-        DirectionalLight::default(),
-        Transform::from_xyz(4.0, 10.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    commands.spawn_scene(bsn! {
+        DirectionalLight
+        Transform::from_xyz(4.0, 10.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y)
+    });
 
-    commands
-        .spawn((
-            Mesh3d(meshes.add(Sphere::new(0.5))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 1.0, 1.0),
-                ..default()
-            })),
-            Transform::from_xyz(-10.0, 1.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
-            SonusListener,
-        ))
-        .with_child((
-            Camera3d::default(),
-            Transform::from_xyz(0.0, 0.3, 0.0).looking_to(Dir3::NEG_Z, Vec3::Y),
-        ));
-
-    commands.spawn((
-        Text::new("FPS: --"),
-        TextFont {
-            font_size: 20.0.into(),
+    commands.spawn_scene(bsn! {
+        Mesh3d(asset_value(Sphere::new(0.5)))
+        MeshMaterial3d<StandardMaterial>(asset_value(StandardMaterial {
+            base_color: Color::srgb(1.0, 1.0, 1.0),
             ..default()
-        },
-        TextColor(Color::srgb(0.0, 1.0, 0.0)),
+        }))
+        Transform::from_xyz(-10.0, 1.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y)
+        SonusListener
+        Children [
+            Camera3d
+            Transform::from_xyz(0.0, 0.3, 0.0).looking_to(Dir3::NEG_Z, Vec3::Y)
+        ]
+    });
+
+    commands.spawn_scene(bsn! {
+        Text::new("FPS: --")
+        TextFont {
+            font_size: FontSize::from(20.0),
+        }
+        TextColor(Color::srgb(0.0, 1.0, 0.0))
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
             left: Val::Px(10.0),
-            ..default()
-        },
-        FpsText,
-    ));
+        }
+        FpsText
+    });
 }
 
 /// Movement system updating player position relative to facing orientation.

@@ -6,17 +6,22 @@ use crate::config::{
 };
 use crate::source::SonusSource;
 use bevy::app::App;
-use bevy::asset::Handle;
+use bevy::asset::{Handle, HandleTemplate};
 use bevy::audio::{AddAudioSource, AudioSource};
 use bevy::camera::primitives::Aabb;
-use bevy::math::bounding::{Aabb3d, RayCast3d};
+use bevy::ecs::template::TemplateContext;
 use bevy::prelude::*;
+use bevy::shape::{Aabb3d, RayCast3d};
 use std::sync::Arc;
 
 /// Marker component for the active spatial audio listener entity.
-#[derive(Component, Reflect, Default)]
+#[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
 pub struct SonusListener;
+
+#[derive(Component, Reflect, Default, Clone)]
+#[reflect(Component, Default)]
+pub struct SonusListenerShouldNotPlay;
 
 /// Preset materials with predefined acoustic transmission properties across low, mid, and high frequency bands.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Reflect, Default)]
@@ -134,35 +139,116 @@ impl Default for AcousticMaterial {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum SonusSourceInput {
-    Path(String),
-    AudioHandle(Handle<AudioSource>),
-}
-
-impl From<&str> for SonusSourceInput {
-    fn from(path: &str) -> Self {
-        Self::Path(path.to_string())
-    }
-}
-
-impl From<String> for SonusSourceInput {
-    fn from(path: String) -> Self {
-        Self::Path(path)
-    }
-}
-
-impl From<Handle<AudioSource>> for SonusSourceInput {
-    fn from(handle: Handle<AudioSource>) -> Self {
-        Self::AudioHandle(handle)
-    }
-}
-
 /// Emitter component attached to spatial audio sources in the Bevy scene.
-#[derive(Component)]
-pub struct SonusEmitter {
-    pub(crate) source: SonusSourceInput,
-    pub(crate) control: Arc<SonusControl>,
+#[derive(Component, FromTemplate)]
+pub struct SonusEmitter(pub(crate) Handle<AudioSource>);
+
+impl SonusEmitter {
+    /// Creates a new sound emitter from an asset path or handle.
+    pub fn new(source: Handle<AudioSource>) -> Self {
+        Self(source)
+    }
+
+    pub fn source(&self) -> &Handle<AudioSource> {
+        &self.0
+    }
+
+    pub(crate) fn update_handle_status(&mut self, source: Handle<AudioSource>) {
+        self.0 = source;
+    }
+}
+
+#[derive(Component, FromTemplate)]
+pub struct SonusControlRef(pub(crate) Arc<SonusControl>);
+
+impl SonusControlRef {
+    pub fn new() -> Self {
+        Self(Arc::new(SonusControl::default()))
+    }
+
+    pub fn control(&self) -> &Arc<SonusControl> {
+        &self.0
+    }
+
+    /// Enables real-time 3-band occlusion filtering for this sound emitter.
+    pub fn with_occlusion(mut self) -> Self {
+        Arc::make_mut(&mut self.0).occlusion_control = Some(Arc::new(OcclusionControl {
+            gain_low: AudioParam::new(1.0),
+            gain_mid: AudioParam::new(1.0),
+            gain_high: AudioParam::new(1.0),
+            perceived_dir_x: AudioParam::new(0.0),
+            perceived_dir_y: AudioParam::new(0.0),
+            perceived_dir_z: AudioParam::new(0.0),
+        }));
+        self
+    }
+
+    /// Enables real-time distance attenuation with a specified attenuation model.
+    pub fn with_attenuation(mut self, model: AttenuationModel) -> Self {
+        Arc::make_mut(&mut self.0).attenuation_control = Some(Arc::new(AttenuationControl {
+            model,
+            gain: AudioParam::new(1.0),
+        }));
+        self
+    }
+
+    pub fn with_panning(mut self) -> Self {
+        Arc::make_mut(&mut self.0).panning_control = Some(Arc::new(PanningControl {
+            right_gain: AudioParam::new(0.5),
+            left_gain: AudioParam::new(0.5),
+        }));
+        self
+    }
+}
+
+#[derive(Component, FromTemplate)]
+#[relationship_target(relationship = SonusEmitterControlOf, linked_spawn)]
+pub struct SonusEmitterControls(Vec<Entity>);
+
+#[derive(Component, FromTemplate)]
+#[relationship(relationship_target = SonusEmitterControls)]
+pub struct SonusEmitterControlOf(pub Entity);
+
+#[derive(Component, FromTemplate)]
+#[relationship_target(relationship = SonusListenerControlOf, linked_spawn)]
+pub struct SonusListenerControls(Vec<Entity>);
+
+#[derive(Component, FromTemplate)]
+#[relationship(relationship_target = SonusListenerControls)]
+pub struct SonusListenerControlOf(pub Entity);
+
+#[derive(Default)]
+pub struct SonusControlFromConfigTemplate {
+    pub occlusion: bool,
+    pub panning: bool,
+    pub attenuation: Option<AttenuationModel>,
+}
+
+impl Template for SonusControlFromConfigTemplate {
+    type Output = SonusControlRef;
+
+    fn build_template(&self, _: &mut TemplateContext) -> Result<Self::Output> {
+        let mut emitter = SonusControlRef::new();
+        if self.occlusion {
+            emitter = emitter.with_occlusion();
+        }
+        if self.panning {
+            emitter = emitter.with_panning();
+        }
+        if let Some(attenuation) = self.attenuation {
+            emitter = emitter.with_attenuation(attenuation);
+        }
+
+        Ok(emitter)
+    }
+
+    fn clone_template(&self) -> Self {
+        Self {
+            occlusion: self.occlusion,
+            panning: self.panning,
+            attenuation: self.attenuation.clone(),
+        }
+    }
 }
 
 /// Declarative configuration for spatial sound emitters loaded from Blender / Skein.
@@ -188,73 +274,33 @@ impl Default for SonusEmitterConfig {
     }
 }
 
-impl SonusEmitter {
-    /// Creates a new sound emitter from an asset path or handle.
-    pub fn new(source: impl Into<SonusSourceInput>) -> Self {
-        Self {
-            source: source.into(),
-            control: Arc::new(SonusControl::new()),
-        }
-    }
-
-    pub(crate) fn update_handle_status(&mut self, source: impl Into<SonusSourceInput>) {
-        self.source = source.into();
-    }
-
-    /// Enables real-time 3-band occlusion filtering for this sound emitter.
-    pub fn with_occlusion(mut self) -> Self {
-        Arc::make_mut(&mut self.control).occlusion_control = Some(Arc::new(OcclusionControl {
-            gain_low: AudioParam::new(1.0),
-            gain_mid: AudioParam::new(1.0),
-            gain_high: AudioParam::new(1.0),
-            perceived_dir_x: AudioParam::new(0.0),
-            perceived_dir_y: AudioParam::new(0.0),
-            perceived_dir_z: AudioParam::new(0.0),
-        }));
-        self
-    }
-
-    /// Enables real-time distance attenuation with a specified attenuation model.
-    pub fn with_attenuation(mut self, model: AttenuationModel) -> Self {
-        Arc::make_mut(&mut self.control).attenuation_control = Some(Arc::new(AttenuationControl {
-            model,
-            gain: AudioParam::new(1.0),
-        }));
-        self
-    }
-
-    pub fn with_panning(mut self) -> Self {
-        Arc::make_mut(&mut self.control).panning_control = Some(Arc::new(PanningControl {
-            right_gain: AudioParam::new(0.5),
-            left_gain: AudioParam::new(0.5),
-        }));
-        self
-    }
-}
-
 /// System for instantiating and attaching custom `SonusSource` audio players to entities.
 pub(crate) fn sonus_audio_system(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut query: Query<(Entity, &mut SonusEmitter), Without<AudioPlayer<SonusSource>>>,
+    q_emitter: Query<&SonusEmitter>,
+    q_listener: Query<(), (With<SonusListener>, Without<SonusListenerShouldNotPlay>)>,
+    q_controls: Query<
+        (
+            Entity,
+            &SonusControlRef,
+            &SonusEmitterControlOf,
+            &SonusListenerControlOf,
+        ),
+        Without<AudioPlayer<SonusSource>>,
+    >,
     audio_assets: Res<Assets<AudioSource>>,
     mut sonus_assets: ResMut<Assets<SonusSource>>,
 ) {
-    for (entity, mut emitter) in &mut query {
-        let audio_handle = match &emitter.source {
-            SonusSourceInput::Path(path) => {
-                let handle = asset_server.load(path);
-                emitter.update_handle_status(handle.clone());
-                handle
-            }
-            SonusSourceInput::AudioHandle(handle) => handle.clone(),
-        };
-
-        let Some(audio_source) = audio_assets.get(&audio_handle) else {
-            continue;
-        };
-
-        let sonus_source = SonusSource::new(audio_source.bytes.clone(), emitter.control.clone());
+    for (entity, control, audio_source) in
+        q_controls
+            .iter()
+            .flat_map(|(entity, control, emitter, listener)| {
+                let audio_source = audio_assets.get(q_emitter.get(emitter.0).ok()?.0.id())?;
+                q_listener.get(listener.0).ok()?;
+                Some((entity, control.0.clone(), audio_source))
+            })
+    {
+        let sonus_source = SonusSource::new(audio_source.bytes.clone(), control);
         let sonus_handle = sonus_assets.add(sonus_source);
 
         commands.entity(entity).insert(AudioPlayer(sonus_handle));
@@ -297,11 +343,7 @@ fn compute_cross_pattern_rays(origin: Vec3, target: Vec3, radius: f32) -> [Vec3;
 }
 
 /// Helper function to count ray intersections against a local AABB obstacle.
-fn count_wall_hits(
-    rays: &[Vec3],
-    local_listener: Vec3,
-    local_aabb: &Aabb3d,
-) -> usize {
+fn count_wall_hits(rays: &[Vec3], local_listener: Vec3, local_aabb: &Aabb3d) -> usize {
     let mut hits = 0;
     for &ray in rays {
         let local_delta = local_listener - ray;
@@ -321,13 +363,13 @@ fn count_wall_hits(
 /// System for computing raycast intersections in the obstacle's local coordinate space.
 pub fn sonus_occlusion_system(
     time: Res<Time>,
-    emitter_query: Query<(
-        &GlobalTransform,
-        &SonusEmitter,
-        Option<&Children>,
-        Option<&Aabb>,
-    )>,
+    emitter_query: Query<(&GlobalTransform, Option<&Children>, Option<&Aabb>), With<SonusEmitter>>,
     listener_query: Query<&GlobalTransform, With<SonusListener>>,
+    controls_query: Query<(
+        &SonusControlRef,
+        &SonusEmitterControlOf,
+        &SonusListenerControlOf,
+    )>,
     wall_query: Query<(
         &GlobalTransform,
         &AcousticMaterial,
@@ -336,16 +378,23 @@ pub fn sonus_occlusion_system(
     )>,
     mesh_aabb_query: Query<&Aabb>,
 ) {
-    let Some(listener_transform) = listener_query.iter().next() else {
-        return;
-    };
-    let listener_pos = listener_transform.translation();
+    for (control, emitter, listener) in controls_query.iter() {
+        let Ok(listener_transform) = listener_query.get(listener.0) else {
+            continue;
+        };
 
-    let dt = time.delta_secs();
-    let smooth_factor = (dt * 10.0).min(1.0);
+        let Ok((emitter_transform, emitter_children, self_emitter_aabb)) =
+            emitter_query.get(emitter.0)
+        else {
+            continue;
+        };
 
-    for (emitter_transform, emitter, emitter_children, self_emitter_aabb) in emitter_query.iter() {
-        let Some(occlusion_control) = &emitter.control.occlusion_control else {
+        let listener_pos = listener_transform.translation();
+
+        let dt = time.delta_secs();
+        let smooth_factor = (dt * 10.0).min(1.0);
+
+        let Some(occlusion_control) = &control.0.occlusion_control else {
             continue;
         };
 
@@ -438,15 +487,24 @@ pub fn sonus_occlusion_system(
 
 /// System for computing distance-based audio attenuation and updating target volume gain.
 pub fn sonus_attenuation_system(
-    emitter_query: Query<(&GlobalTransform, &SonusEmitter)>,
+    emitter_query: Query<&GlobalTransform, With<SonusEmitter>>,
     listener_query: Query<&GlobalTransform, With<SonusListener>>,
+    controls_query: Query<(
+        &SonusControlRef,
+        &SonusEmitterControlOf,
+        &SonusListenerControlOf,
+    )>,
 ) {
-    let Some(listener_transform) = listener_query.iter().next() else {
-        return;
-    };
+    for (control, emitter, listener) in controls_query.iter() {
+        let Ok(listener_transform) = listener_query.get(listener.0) else {
+            continue;
+        };
 
-    for (emitter_transform, emitter) in emitter_query.iter() {
-        let Some(attenuation_control) = &emitter.control.attenuation_control else {
+        let Ok(emitter_transform) = emitter_query.get(emitter.0) else {
+            continue;
+        };
+
+        let Some(attenuation_control) = &control.0.attenuation_control else {
             continue;
         };
 
@@ -488,22 +546,31 @@ pub fn sonus_attenuation_system(
 }
 
 pub fn sonus_panning_system(
-    emitter_query: Query<(&GlobalTransform, &SonusEmitter)>,
+    emitter_query: Query<&GlobalTransform, With<SonusEmitter>>,
     listener_query: Query<&GlobalTransform, With<SonusListener>>,
+    controls_query: Query<(
+        &SonusControlRef,
+        &SonusEmitterControlOf,
+        &SonusListenerControlOf,
+    )>,
 ) {
-    let Some(listener_transform) = listener_query.iter().next() else {
-        return;
-    };
-
-    let listener_pos = listener_transform.translation();
-    let list_right = listener_transform.right();
-
-    for (emitter_transform, emitter) in emitter_query.iter() {
-        let Some(panning_control) = &emitter.control.panning_control else {
+    for (control, emitter, listener) in controls_query.iter() {
+        let Ok(listener_transform) = listener_query.get(listener.0) else {
             continue;
         };
 
-        let perceived_dir = if let Some(occlusion_control) = &emitter.control.occlusion_control {
+        let Ok(emitter_transform) = emitter_query.get(emitter.0) else {
+            continue;
+        };
+
+        let listener_pos = listener_transform.translation();
+        let list_right = listener_transform.right();
+
+        let Some(panning_control) = &control.0.panning_control else {
+            continue;
+        };
+
+        let perceived_dir = if let Some(occlusion_control) = &control.0.occlusion_control {
             let px = occlusion_control.perceived_dir_x.get();
             let py = occlusion_control.perceived_dir_y.get();
             let pz = occlusion_control.perceived_dir_z.get();
@@ -547,23 +614,49 @@ pub fn sonus_panning_system(
 /// System detecting new `SonusEmitterConfig` components and instantiating runtime `SonusEmitter` components.
 pub fn sonus_emitter_config_system(
     mut commands: Commands,
-    query: Query<(Entity, &SonusEmitterConfig), Added<SonusEmitterConfig>>,
+    query: Query<(Entity, &SonusEmitterConfig), Without<SonusEmitterControls>>,
+    listener_query: Query<Entity, With<SonusListener>>,
 ) {
-    for (entity, config) in query.iter() {
-        let mut emitter = SonusEmitter::new(&*config.source_path);
-        if config.occlusion {
-            emitter = emitter.with_occlusion();
-        }
-        if config.panning {
-            emitter = emitter.with_panning();
-        }
-        if config.max_dist > 0.0 {
-            emitter = emitter.with_attenuation(AttenuationModel::Linear {
-                min_dist: config.min_dist,
-                max_dist: config.max_dist,
+    for (emitter, config) in query.iter() {
+        commands
+            .entity(emitter)
+            .apply_scene(bsn! {
+                SonusEmitter({config.source_path.clone()})
+            })
+            .remove::<SonusEmitterConfig>();
+
+        for listener in listener_query.iter() {
+            commands.spawn_scene(bsn! {
+                ChildOf(emitter)
+                SonusEmitterControlOf(emitter)
+                SonusListenerControlOf(listener)
+                ~SonusControlFromConfigTemplate {
+                    occlusion: {config.occlusion},
+                    panning: {config.panning},
+                    attenuation: AttenuationModel::Linear {
+                        min_dist: {config.min_dist},
+                        max_dist: {config.max_dist}
+                    },
+                }
             });
         }
-        commands.entity(entity).insert(emitter);
+    }
+}
+
+pub fn sonus_emitter_controls_system(
+    mut commands: Commands,
+    query: Query<Entity, (With<SonusEmitter>, Without<SonusEmitterControls>)>,
+    listener_query: Query<Entity, With<SonusListener>>,
+) {
+    for emitter in query.iter() {
+        for listener in listener_query.iter() {
+            commands.spawn_scene(bsn! {
+                ChildOf(emitter)
+                SonusEmitterControlOf(emitter)
+                SonusListenerControlOf(listener)
+                SonusControlRef
+            });
+        }
     }
 }
 
@@ -582,13 +675,13 @@ pub fn sonus_material_preset_system(
 /// System for rendering 3D spatial audio debug gizmos (attenuation spheres, raycast lines, wall AABBs).
 pub fn sonus_debug_gizmos_system(
     mut gizmos: Gizmos,
-    emitter_query: Query<(
-        &GlobalTransform,
-        &SonusEmitter,
-        Option<&Children>,
-        Option<&Aabb>,
-    )>,
+    emitter_query: Query<(&GlobalTransform, Option<&Children>, Option<&Aabb>), With<SonusEmitter>>,
     listener_query: Query<&GlobalTransform, With<SonusListener>>,
+    controls_query: Query<(
+        &SonusControlRef,
+        &SonusEmitterControlOf,
+        &SonusListenerControlOf,
+    )>,
     wall_query: Query<(
         &GlobalTransform,
         &AcousticMaterial,
@@ -597,33 +690,40 @@ pub fn sonus_debug_gizmos_system(
     )>,
     mesh_aabb_query: Query<&Aabb>,
 ) {
-    let Some(listener_transform) = listener_query.iter().next() else {
-        return;
-    };
-    let listener_pos = listener_transform.translation();
-
-    for (wall_transform, _material, children, self_aabb) in wall_query.iter() {
-        let Some(aabb) = resolve_aabb(self_aabb, children, &mesh_aabb_query) else {
+    for (control, emitter, listener) in controls_query.iter() {
+        let Ok(listener_transform) = listener_query.get(listener.0) else {
             continue;
         };
 
-        let center: Vec3 = aabb.center.into();
-        let half_extents: Vec3 = aabb.half_extents.into();
+        let Ok((emitter_transform, emitter_children, self_emitter_aabb)) =
+            emitter_query.get(emitter.0)
+        else {
+            continue;
+        };
 
-        let world_center = wall_transform.to_matrix().transform_point3(center);
-        let (wall_scale, wall_rot, _) = wall_transform.to_scale_rotation_translation();
+        let listener_pos = listener_transform.translation();
 
-        gizmos.primitive_3d(
-            &Cuboid::from_size(half_extents * 2.0 * wall_scale),
-            Isometry3d::new(world_center, wall_rot),
-            Color::srgb(0.7, 0.2, 0.8),
-        );
-    }
+        for (wall_transform, _material, children, self_aabb) in wall_query.iter() {
+            let Some(aabb) = resolve_aabb(self_aabb, children, &mesh_aabb_query) else {
+                continue;
+            };
 
-    for (emitter_transform, emitter, emitter_children, self_emitter_aabb) in emitter_query.iter() {
+            let center: Vec3 = aabb.center.into();
+            let half_extents: Vec3 = aabb.half_extents.into();
+
+            let world_center = wall_transform.to_matrix().transform_point3(center);
+            let (wall_scale, wall_rot, _) = wall_transform.to_scale_rotation_translation();
+
+            gizmos.primitive_3d(
+                &Cuboid::from_size(half_extents * 2.0 * wall_scale),
+                Isometry3d::new(world_center, wall_rot),
+                Color::srgb(0.7, 0.2, 0.8),
+            );
+        }
+
         let emitter_pos = emitter_transform.translation();
 
-        if let Some(attenuation_control) = &emitter.control.attenuation_control
+        if let Some(attenuation_control) = &control.0.attenuation_control
             && let AttenuationModel::Linear { min_dist, max_dist } = attenuation_control.model
         {
             gizmos.sphere(
@@ -639,7 +739,7 @@ pub fn sonus_debug_gizmos_system(
         }
 
         let mut max_obstruction_ratio = 0.0f32;
-        if emitter.control.occlusion_control.is_some() {
+        if control.0.occlusion_control.is_some() {
             let resolved_emitter_aabb =
                 resolve_aabb(self_emitter_aabb, emitter_children, &mesh_aabb_query);
 
@@ -723,11 +823,25 @@ impl Plugin for SonusAudioPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::asset::io::embedded::GetAssetServer;
+    use bevy::audio::AudioPlugin;
+    use bevy::scene::ScenePlugin;
 
     #[test]
     fn test_sonus_emitter_config_spawning() {
         let mut app = App::new();
-        app.add_systems(Update, sonus_emitter_config_system);
+        app.add_plugins((
+            AssetPlugin::default(),
+            AudioPlugin::default(),
+            TaskPoolPlugin::default(),
+            ScenePlugin::default(),
+        ));
+        app.add_systems(
+            Update,
+            (sonus_emitter_config_system, sonus_emitter_controls_system).chain(),
+        );
+
+        app.world_mut().spawn(SonusListener);
 
         let entity = app
             .world_mut()
@@ -743,6 +857,51 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(entity).contains::<SonusEmitter>());
+        assert!(
+            app.world()
+                .entity(entity)
+                .contains::<SonusEmitterControls>()
+        );
+    }
+
+    #[test]
+    fn test_sonus_controls_spawning() {
+        let mut app = App::new();
+        app.add_plugins((
+            AssetPlugin::default(),
+            AudioPlugin::default(),
+            TaskPoolPlugin::default(),
+            ScenePlugin::default(),
+        ));
+        app.add_systems(
+            Update,
+            (sonus_emitter_config_system, sonus_emitter_controls_system).chain(),
+        );
+
+        let listener = app.world_mut().spawn(SonusListener).id();
+
+        let emitter = app
+            .world_mut()
+            .spawn_scene(bsn! {SonusEmitter("input.wav")})
+            .unwrap()
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(listener)
+                .contains::<SonusListenerControls>()
+        );
+        assert!(
+            app.world()
+                .entity(emitter)
+                .contains::<SonusEmitterControls>()
+        );
+
+        let mut query = app.world_mut().query::<&SonusControlRef>();
+
+        assert_eq!(query.iter(app.world()).count(), 1)
     }
 
     #[test]
@@ -773,21 +932,31 @@ mod tests {
     #[test]
     fn test_diffraction_panning_bending() {
         let mut app = App::new();
+        app.add_plugins((
+            AssetPlugin::default(),
+            AudioPlugin::default(),
+            TaskPoolPlugin::default(),
+        ));
         app.add_systems(Update, sonus_panning_system);
 
         let listener_transform = Transform::from_xyz(0.0, 0.0, 0.0);
-        app.world_mut().spawn((
-            SonusListener,
-            listener_transform,
-            GlobalTransform::from(listener_transform),
-        ));
+        let listener_entity = app
+            .world_mut()
+            .spawn((
+                SonusListener,
+                listener_transform,
+                GlobalTransform::from(listener_transform),
+            ))
+            .id();
 
-        let emitter = SonusEmitter::new("sound.wav")
-            .with_panning()
-            .with_occlusion();
+        let asset_server = app.get_asset_server();
+
+        let emitter = SonusEmitter::new(asset_server.load("sound.wav"));
+
+        let control = SonusControlRef::new().with_panning().with_occlusion();
 
         // Simulate occlusion system setting a bent perceived direction (pointing right: +X)
-        if let Some(occ) = &emitter.control.occlusion_control {
+        if let Some(occ) = &control.0.occlusion_control {
             occ.perceived_dir_x.set(1.0);
             occ.perceived_dir_y.set(0.0);
             occ.perceived_dir_z.set(0.0);
@@ -803,14 +972,23 @@ mod tests {
             ))
             .id();
 
+        let control_entity = app
+            .world_mut()
+            .spawn((
+                control,
+                SonusEmitterControlOf(emitter_entity),
+                SonusListenerControlOf(listener_entity),
+            ))
+            .id();
+
         app.update();
 
-        let emitter_ref = app
+        let control_ref = app
             .world()
-            .entity(emitter_entity)
-            .get::<SonusEmitter>()
+            .entity(control_entity)
+            .get::<SonusControlRef>()
             .unwrap();
-        let panning = emitter_ref.control.panning_control.as_ref().unwrap();
+        let panning = control_ref.0.panning_control.as_ref().unwrap();
 
         // Since perceived direction was bent to +X (Right), right ear gain should be higher than left
         assert!(panning.right_gain.get() > panning.left_gain.get());

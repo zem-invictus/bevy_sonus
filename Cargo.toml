@@ -1,6 +1,6 @@
 [package]
 name = "bevy_sonus"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["zem-invictus <vovazms@gmail.com>"]
 description = "Spatial audio plugin for Bevy Engine featuring multi-ray occlusion, 3-band crossover filtering, material transmission, and sound diffraction."
@@ -12,16 +12,19 @@ keywords = ["bevy", "audio", "spatial", "occlusion", "dsp"]
 categories = ["multimedia::audio", "game-development"]
 
 [dependencies]
-bevy = { version = "0.19.0", features = ["jpeg"] }
-bevy-inspector-egui = "0.37.0"
+bevy = { version = "0.20", features = ["jpeg"] }
 hound = "3.5.1"
 rodio = { version = "0.22.2", default-features = false, features = ["wav"] }
 ringbuf = "0.5.0"
-bevy_skein = "0.6.0"
+bevy_skein = { version = "0.7.0", optional = true }
+
+[features]
+example = ["dep:bevy_skein"]
 
 [[example]]
 name = "demo"
 path = "examples/demo.rs"
+required-features = ["example"]
 
 [profile.dev.package."*"]
 opt-level = 3
