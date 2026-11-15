@@ -25,15 +25,16 @@ Add `bevy_sonus` to `Cargo.toml`:
 
 ```toml
 [dependencies]
-bevy = "0.19"
-bevy_sonus = "0.1"
+bevy = "0.20"
+bevy_sonus = "0.2"
 ```
 
 ### Spawning Emitter and Listener
 
 ```rust
 use bevy::prelude::*;
-use bevy_sonus::{AcousticMaterialPreset, AttenuationModel, SonusAudioPlugin, SonusEmitter, SonusListener};
+use bevy_sonus::{AcousticMaterialPreset, SonusAudioPlugin, SonusListener};
+use bevy_sonus::ecs::SonusEmitterFromConfigTemplate;
 
 fn main() {
     App::new()
@@ -44,30 +45,34 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let obstacle_transform = Transform::from_xyz(0.0, 1.5, 2.5);
+
     // Spatial audio listener on player camera
-    commands.spawn((
-        SonusListener,
-        Transform::from_xyz(0.0, 1.5, 5.0),
-    ));
+    commands.spawn_scene(bsn! {
+        Camera3d
+        SonusListener
+        Transform::from_xyz(0.0, 1.5, 5.0).looking_at(obstacle_transform.translation, obstacle_transform.up())
+    });
 
     // Spatial sound emitter with occlusion and distance attenuation
-    commands.spawn((
-        SonusEmitter::new("audio/siren.wav")
-            .with_occlusion()
-            .with_attenuation(AttenuationModel::Linear { min_dist: 2.0, max_dist: 20.0 }),
-        Transform::from_xyz(0.0, 1.0, 0.0),
-    ));
+    commands.spawn_scene(bsn! {
+        ~SonusEmitterFromConfigTemplate {
+            source: "air_raid.wav",
+            occlusion: true,
+            min_dist: 2.0,
+            max_dist: 20.0,
+        }
+        Transform::from_xyz(0.0, 1.0, 0.0)
+    });
 
     // Obstacle wall with Concrete preset
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(4.0, 3.0, 0.5))),
-        MeshMaterial3d(materials.add(StandardMaterial::default())),
-        AcousticMaterialPreset::Concrete,
-        Transform::from_xyz(0.0, 1.5, 2.5),
-    ));
+    commands.spawn_scene(bsn! {
+        Mesh3d(asset_value(Cuboid::new(1.0, 1.0, 0.5)))
+        MeshMaterial3d<StandardMaterial>(asset_value(StandardMaterial::from_color(Color::BLACK)))
+        AcousticMaterialPreset::Concrete
+        obstacle_transform
+    });
 }
 ```
 

@@ -6,15 +6,16 @@ use crate::config::{
 };
 use crate::source::SonusSource;
 use bevy::app::App;
-use bevy::asset::Handle;
+use bevy::asset::{Handle, HandleTemplate};
 use bevy::audio::{AddAudioSource, AudioSource};
 use bevy::camera::primitives::Aabb;
-use bevy::math::bounding::{Aabb3d, RayCast3d};
+use bevy::ecs::template::TemplateContext;
 use bevy::prelude::*;
+use bevy::shape::{Aabb3d, RayCast3d};
 use std::sync::Arc;
 
 /// Marker component for the active spatial audio listener entity.
-#[derive(Component, Reflect, Default)]
+#[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
 pub struct SonusListener;
 
@@ -134,35 +135,52 @@ impl Default for AcousticMaterial {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum SonusSourceInput {
-    Path(String),
-    AudioHandle(Handle<AudioSource>),
-}
-
-impl From<&str> for SonusSourceInput {
-    fn from(path: &str) -> Self {
-        Self::Path(path.to_string())
-    }
-}
-
-impl From<String> for SonusSourceInput {
-    fn from(path: String) -> Self {
-        Self::Path(path)
-    }
-}
-
-impl From<Handle<AudioSource>> for SonusSourceInput {
-    fn from(handle: Handle<AudioSource>) -> Self {
-        Self::AudioHandle(handle)
-    }
-}
-
 /// Emitter component attached to spatial audio sources in the Bevy scene.
-#[derive(Component)]
+#[derive(Component, FromTemplate)]
 pub struct SonusEmitter {
-    pub(crate) source: SonusSourceInput,
+    pub(crate) source: Handle<AudioSource>,
     pub(crate) control: Arc<SonusControl>,
+}
+
+#[derive(Default)]
+pub struct SonusEmitterFromConfigTemplate {
+    pub source: HandleTemplate<AudioSource>,
+    pub occlusion: bool,
+    pub panning: bool,
+    pub min_dist: f32,
+    pub max_dist: f32,
+}
+
+impl Template for SonusEmitterFromConfigTemplate {
+    type Output = SonusEmitter;
+
+    fn build_template(&self, context: &mut TemplateContext) -> Result<Self::Output> {
+        let mut emitter = SonusEmitter::new(self.source.build_template(context)?);
+        if self.occlusion {
+            emitter = emitter.with_occlusion();
+        }
+        if self.panning {
+            emitter = emitter.with_panning();
+        }
+        if self.max_dist > 0.0 {
+            emitter = emitter.with_attenuation(AttenuationModel::Linear {
+                min_dist: self.min_dist,
+                max_dist: self.max_dist,
+            });
+        }
+
+        Ok(emitter)
+    }
+
+    fn clone_template(&self) -> Self {
+        Self {
+            source: self.source.clone_template(),
+            occlusion: self.occlusion,
+            panning: self.panning,
+            min_dist: self.min_dist,
+            max_dist: self.max_dist,
+        }
+    }
 }
 
 /// Declarative configuration for spatial sound emitters loaded from Blender / Skein.
@@ -190,15 +208,15 @@ impl Default for SonusEmitterConfig {
 
 impl SonusEmitter {
     /// Creates a new sound emitter from an asset path or handle.
-    pub fn new(source: impl Into<SonusSourceInput>) -> Self {
+    pub fn new(source: Handle<AudioSource>) -> Self {
         Self {
-            source: source.into(),
+            source,
             control: Arc::new(SonusControl::new()),
         }
     }
 
-    pub(crate) fn update_handle_status(&mut self, source: impl Into<SonusSourceInput>) {
-        self.source = source.into();
+    pub(crate) fn update_handle_status(&mut self, source: Handle<AudioSource>) {
+        self.source = source;
     }
 
     /// Enables real-time 3-band occlusion filtering for this sound emitter.
@@ -235,22 +253,12 @@ impl SonusEmitter {
 /// System for instantiating and attaching custom `SonusSource` audio players to entities.
 pub(crate) fn sonus_audio_system(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut query: Query<(Entity, &mut SonusEmitter), Without<AudioPlayer<SonusSource>>>,
     audio_assets: Res<Assets<AudioSource>>,
     mut sonus_assets: ResMut<Assets<SonusSource>>,
 ) {
-    for (entity, mut emitter) in &mut query {
-        let audio_handle = match &emitter.source {
-            SonusSourceInput::Path(path) => {
-                let handle = asset_server.load(path);
-                emitter.update_handle_status(handle.clone());
-                handle
-            }
-            SonusSourceInput::AudioHandle(handle) => handle.clone(),
-        };
-
-        let Some(audio_source) = audio_assets.get(&audio_handle) else {
+    for (entity, emitter) in &mut query {
+        let Some(audio_source) = audio_assets.get(&emitter.source) else {
             continue;
         };
 
@@ -297,11 +305,7 @@ fn compute_cross_pattern_rays(origin: Vec3, target: Vec3, radius: f32) -> [Vec3;
 }
 
 /// Helper function to count ray intersections against a local AABB obstacle.
-fn count_wall_hits(
-    rays: &[Vec3],
-    local_listener: Vec3,
-    local_aabb: &Aabb3d,
-) -> usize {
+fn count_wall_hits(rays: &[Vec3], local_listener: Vec3, local_aabb: &Aabb3d) -> usize {
     let mut hits = 0;
     for &ray in rays {
         let local_delta = local_listener - ray;
@@ -550,20 +554,17 @@ pub fn sonus_emitter_config_system(
     query: Query<(Entity, &SonusEmitterConfig), Added<SonusEmitterConfig>>,
 ) {
     for (entity, config) in query.iter() {
-        let mut emitter = SonusEmitter::new(&*config.source_path);
-        if config.occlusion {
-            emitter = emitter.with_occlusion();
-        }
-        if config.panning {
-            emitter = emitter.with_panning();
-        }
-        if config.max_dist > 0.0 {
-            emitter = emitter.with_attenuation(AttenuationModel::Linear {
-                min_dist: config.min_dist,
-                max_dist: config.max_dist,
-            });
-        }
-        commands.entity(entity).insert(emitter);
+        let config = config.clone();
+
+        commands.entity(entity).apply_scene(bsn! {
+            ~SonusEmitterFromConfigTemplate {
+                source: {config.source_path.clone()},
+                occlusion: {config.occlusion},
+                panning: {config.panning},
+                min_dist: {config.min_dist},
+                max_dist: {config.max_dist},
+            }
+        });
     }
 }
 
@@ -723,10 +724,19 @@ impl Plugin for SonusAudioPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::asset::io::embedded::GetAssetServer;
+    use bevy::audio::AudioPlugin;
+    use bevy::scene::ScenePlugin;
 
     #[test]
     fn test_sonus_emitter_config_spawning() {
         let mut app = App::new();
+        app.add_plugins((
+            AssetPlugin::default(),
+            AudioPlugin::default(),
+            TaskPoolPlugin::default(),
+            ScenePlugin::default(),
+        ));
         app.add_systems(Update, sonus_emitter_config_system);
 
         let entity = app
@@ -773,6 +783,11 @@ mod tests {
     #[test]
     fn test_diffraction_panning_bending() {
         let mut app = App::new();
+        app.add_plugins((
+            AssetPlugin::default(),
+            AudioPlugin::default(),
+            TaskPoolPlugin::default(),
+        ));
         app.add_systems(Update, sonus_panning_system);
 
         let listener_transform = Transform::from_xyz(0.0, 0.0, 0.0);
@@ -782,7 +797,9 @@ mod tests {
             GlobalTransform::from(listener_transform),
         ));
 
-        let emitter = SonusEmitter::new("sound.wav")
+        let asset_server = app.get_asset_server();
+
+        let emitter = SonusEmitter::new(asset_server.load("sound.wav"))
             .with_panning()
             .with_occlusion();
 
